@@ -131,7 +131,6 @@ class Offer:
     # This method does not get every coin that is being offered, only the `settlement_payment` children
     def get_offered_coins(self) -> Dict[Optional[bytes32], List[Coin]]:
         offered_coins: Dict[Optional[bytes32], List[Coin]] = {}
-
         for addition in self.additions():
             # Get the parent puzzle
             parent_puzzle: Program = list(

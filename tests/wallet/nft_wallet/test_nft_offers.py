@@ -981,9 +981,7 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
     maker_fee = uint64(433)
     driver_dict: Dict[bytes32, Optional[PuzzleInfo]] = {nft_to_offer_asset_id: nft_to_offer_info}
 
-    trade_solver = Solver(
-        {"trade_prices_list": [{nft_to_offer_asset_id: 1, "offered": True}, {None: xch_requested, "offered": False}]}
-    )
+    trade_solver = Solver({"offered": {nft_to_offer_asset_id: 1}, "trade_prices_list": [[xch_requested, 0]]})
 
     offer_did_nft_for_xch = {nft_to_offer_asset_id: trade_solver}
 
@@ -991,10 +989,10 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
         offer_did_nft_for_xch, driver_dict, fee=maker_fee
     )
 
-    # await asyncio.sleep(1)
-    # assert success is True
-    # assert error is None
-    # assert trade_make is not None
+    await asyncio.sleep(1)
+    assert success is True
+    assert error is None
+    assert trade_make is not None
 
     # taker_fee = uint64(1)
     # success, trade_take, error = await trade_manager_taker.respond_to_offer(

@@ -30,7 +30,6 @@ from chia.wallet.nft_wallet.nft_puzzles import (
     create_incomplete_graftroot_transfer_solution,
     create_ownership_layer_puzzle,
     create_ownership_layer_transfer_solution,
-    create_ownership_layer_transfer_solution_graftroot,
     get_metadata_and_phs,
 )
 from chia.wallet.nft_wallet.uncurry_nft import UncurriedNFT
@@ -903,18 +902,18 @@ class NFTWallet:
 
         return (unsigned_spend_bundle, chia_tx)
 
-    async def create_solution_for_offered_nft(
-        self, coin_info: NFTCoinInfo, trade_prices_list: List[Any], condition_list: List[Any]
-    ) -> Program:
+    async def create_solution_for_offered_nft(self, coin_info: NFTCoinInfo, trade_prices_list: List[Any]) -> Program:
         coin = coin_info.coin
+        # GRAFTROOT_MOD.curry([], trade_prices_list)
         graftroot_puz = create_graftroot_transfer_puzzle(trade_prices_list, [])
+        # Program.to([[], graftroot_puz, []])
         graftroot_sol = create_incomplete_graftroot_transfer_solution(
             graftroot_puz,
         )
-        # unft = UncurriedNFT.uncurry(coin_info.full_puzzle)
         nft_driver = match_puzzle(coin_info.full_puzzle)
         assert nft_driver
         parent_coin_id = coin.parent_coin_info
+
         # get the parent spend from past txns
         all_txns = await self.wallet_state_manager.get_all_transactions(self.id())
         for tx in all_txns:
@@ -928,13 +927,9 @@ class NFTWallet:
                 parent_spend = cs
                 break
         assert parent_spend is not None
+
         coin_bytes = b"".join([coin.parent_coin_info, coin.puzzle_hash, bytes(uint64(coin.amount))])
-
         solver = {"coin": coin_bytes, "parent_spend": bytes(parent_spend)}
-        gf_solution = create_ownership_layer_transfer_solution_graftroot(  # noqa: F841
-            trade_prices_list, G1Element.generator(), []
-        )
-
         singleton_solution = solve_puzzle(nft_driver, solver, graftroot_puz, graftroot_sol)  # type: ignore
         return singleton_solution
 
@@ -955,28 +950,24 @@ class NFTWallet:
         else:
             nft_coins = [c for c in self.nft_wallet_info.my_nft_coins if c.coin in coins]
 
-        # chia_tx = None
+        chia_tx = None
         coin_spends = []
         first = True
         for coin_info in nft_coins:
-            condition_list = [
-                [51, Offer.ph(), 1, [Offer.ph()]],
-            ]
-            # new_pubkey = None
+            sol = await self.create_solution_for_offered_nft(coin_info, trade_prices_list)
             if first:
                 first = False
                 if fee > 0:
-                    # chia_tx = await self.create_tandem_xch_tx(fee)
-                    sol = await self.create_solution_for_offered_nft(coin_info, trade_prices_list, condition_list)
-                else:
-                    sol = await self.create_solution_for_offered_nft(coin_info, trade_prices_list, condition_list)
-            else:
-                sol = await self.create_solution_for_offered_nft(coin_info, trade_prices_list, condition_list)
+                    chia_tx = await self.create_tandem_xch_tx(fee)
             coin_spends.append(CoinSpend(coin_info.coin, coin_info.full_puzzle, sol))
 
-        sb = SpendBundle(coin_spends, G2Element())
-        sb.debug()
-        return sb
+        nft_spend_bundle = SpendBundle(coin_spends, G2Element())
+        chia_spend_bundle = SpendBundle([], G2Element())
+        if chia_tx is not None and chia_tx.spend_bundle is not None:
+            chia_spend_bundle = chia_tx.spend_bundle
+
+        incomplete_spend_bundle = SpendBundle.aggregate([nft_spend_bundle, chia_spend_bundle])
+        return incomplete_spend_bundle
 
     async def create_offer_transactions(
         self, amount: Union[Solver, uint64], coins: List[Coin], announcements: Set[Announcement], fee: uint64
@@ -997,14 +988,7 @@ class NFTWallet:
             return SpendBundle.aggregate(spend_bundles)
         else:
             solver = amount
-            trade_prices_list = []
-            for trade in solver.info["trade_prices_list"]:
-                for key, val in trade.items():
-                    if key is not None and key != "offered":
-                        trade_prices_list.append([val, key])
-                    elif key is None:
-                        trade_prices_list.append([val, 0])
-
+            trade_prices_list = solver.info["trade_prices_list"]
             sb = await self.generate_did_nft_offer_spend_bundle(
                 trade_prices_list,
                 coins=set(coins),

@@ -333,12 +333,13 @@ class TradeManager:
             requested_payments: Dict[Optional[bytes32], List[Payment]] = {}
             fee_left_to_pay: uint64 = fee
             wallet_paying_fee: Union[int, bytes32]
+            p2_ph: bytes32
             for id, solver in offer_dict.items():
                 if isinstance(solver, int) and (solver > 0):  # type: ignore
                     if isinstance(id, int):
                         wallet_id = uint32(id)
                         wallet = self.wallet_state_manager.wallets[wallet_id]
-                        p2_ph: bytes32 = await wallet.get_new_puzzlehash()
+                        p2_ph = await wallet.get_new_puzzlehash()
                         if wallet.type() == WalletType.STANDARD_WALLET:
                             asset_id: Optional[bytes32] = None
                             memos: List[bytes] = []
@@ -370,6 +371,27 @@ class TradeManager:
                     else:
                         asset_id = id
                         wallet = await self.wallet_state_manager.get_wallet_for_asset_id(asset_id.hex())
+                        # extract the requested payments from the offer_dict
+
+                        if isinstance(offer_dict[asset_id], Solver):
+                            trades = offer_dict[asset_id].info["trade_prices_list"]  # type: ignore
+                            for trade in trades:
+                                requested_amount = uint64(trade[0])
+                                requested_asset = trade[1]
+                                if isinstance(requested_asset, int):
+                                    if requested_asset == 0:
+                                        p2_ph = await self.wallet_state_manager.main_wallet.get_new_puzzlehash()
+                                        request_id = None
+                                    else:
+                                        request_wallet = self.wallet_state_manager.wallets[requested_asset]
+                                        p2_ph = await request_wallet.get_new_puzzlehash()
+                                        request_id = requested_asset
+                                    requested_payments[request_id] = [  # type: ignore
+                                        Payment(p2_ph, requested_amount, [p2_ph])
+                                    ]
+                                else:
+                                    raise ValueError("Not supporting other asset classes yet")
+
                     if isinstance(solver, int):
                         if solver == 0:
                             raise ValueError("You cannot offer nor request 0 amount of something")
