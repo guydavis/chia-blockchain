@@ -872,7 +872,7 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
     wallet_taker = wallet_node_taker.wallet_state_manager.main_wallet
 
     ph_maker = await wallet_maker.get_new_puzzlehash()
-    # ph_taker = await wallet_taker.get_new_puzzlehash()
+    ph_taker = await wallet_taker.get_new_puzzlehash()
     # token_ph = bytes32(token_bytes())
 
     if trusted:
@@ -891,6 +891,7 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
 
     for _ in range(1, num_blocks):
         await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(ph_maker))
+        await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(ph_taker))
 
     funds = sum(
         [calculate_pool_reward(uint32(i)) + calculate_base_farmer_reward(uint32(i)) for i in range(1, num_blocks - 1)]
@@ -967,7 +968,7 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
 
     # maker create offer: NFT for xch
     trade_manager_maker = wallet_maker.wallet_state_manager.trade_manager
-    # trade_manager_taker = wallet_taker.wallet_state_manager.trade_manager
+    trade_manager_taker = wallet_taker.wallet_state_manager.trade_manager
 
     coins_maker = nft_wallet_maker.nft_wallet_info.my_nft_coins
     assert len(coins_maker) == 2
@@ -994,12 +995,12 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
     assert error is None
     assert trade_make is not None
 
-    # taker_fee = uint64(1)
-    # success, trade_take, error = await trade_manager_taker.respond_to_offer(
-    #     Offer.from_bytes(trade_make.offer), fee=taker_fee
-    # )
+    taker_fee = uint64(1)
+    success, trade_take, error = await trade_manager_taker.respond_to_offer(
+        Offer.from_bytes(trade_make.offer), fee=taker_fee
+    )
 
-    # await asyncio.sleep(1)
-    # assert success
-    # assert error is None
-    # assert trade_take is not None
+    await asyncio.sleep(1)
+    assert success
+    assert error is None
+    assert trade_take is not None
