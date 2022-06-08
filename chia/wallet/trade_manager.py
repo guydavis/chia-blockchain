@@ -394,7 +394,13 @@ class TradeManager:
 
                     if isinstance(solver, int):
                         if solver == 0:
-                            raise ValueError("You cannot offer nor request 0 amount of something")
+                            # if we've got an NFT1 offer with solver=0
+                            if driver_dict[asset_id].also().also():  # type: ignore
+                                p2_ph = await self.wallet_state_manager.main_wallet.get_new_puzzlehash()
+                                requested_payments[asset_id] = [Payment(p2_ph, uint64(1), [p2_ph])]
+                                break
+                            else:
+                                raise ValueError("You cannot offer nor request 0 amount of something")
                         solver = uint64(abs(solver))
                     if not callable(getattr(wallet, "get_coins_to_offer", None)):  # ATTENTION: new wallets
                         raise ValueError(f"Cannot offer coins from wallet id {wallet.id()}")
@@ -590,6 +596,7 @@ class TradeManager:
             return False, None, error
 
         complete_offer = Offer.aggregate([offer, take_offer])
+
         if complete_offer.incomplete_spends() != []:
             complete_offer = await self.fix_incomplete_offer(complete_offer)
         assert complete_offer.is_valid()
