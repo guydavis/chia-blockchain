@@ -45,6 +45,7 @@ from chia.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle import (
 )
 from chia.wallet.puzzles.puzzle_utils import make_create_coin_condition
 from chia.wallet.puzzles.singleton_top_layer_v1_1 import match_singleton_puzzle
+from chia.wallet.sign_coin_spends import sign_coin_spends
 from chia.wallet.trading.offer import NotarizedPayment, Offer
 from chia.wallet.transaction_record import TransactionRecord
 from chia.wallet.util.compute_memos import compute_memos
@@ -1022,25 +1023,49 @@ class NFTWallet:
             unft = UncurriedNFT.uncurry(spend.puzzle_reveal.to_program())
             royalty_pc = unft.trade_price_percentage
             royalty_addr = unft.royalty_address
-
+            spend_bundles = []
             for coin in offer.get_primary_coins():
                 if coin.amount > 1:
                     wallet = await self.wallet_state_manager.get_wallet_for_coin(coin.name())
                     if wallet.type() == WalletType.STANDARD_WALLET:
-                        asset_id = None
+                        price = sum([pmt.amount for pmt in offer.requested_payments[None]])
+                        royalty_to_pay = uint16(price * royalty_pc / 10000)
                         change_puzzlehash = await wallet.get_new_puzzlehash()
-                    else:
-                        asset_id = wallet.get_asset_id()
-                        change_puzzlehash = await wallet.get_new_inner_hash()
-                    price = sum([pmt.amount for pmt in offer.requested_payments[asset_id]])
-                    royalty_to_pay = uint16(price * royalty_pc / 10000)
-                    pmt_coins = await wallet.select_coins(royalty_to_pay, exclude=[coin])
-                    payments = [Payment(list(pmt_coins)[0].puzzle_hash, 0, [])]
+                        pmt_coins = await wallet.select_coins(royalty_to_pay, exclude=[coin])
+                        pmt_coin = list(pmt_coins)[0]
+                        puzzle = await wallet.puzzle_for_puzzle_hash(pmt_coin.puzzle_hash)
+                        solution = wallet.make_solution(
+                            primaries=[],
+                            fee=uint64(0),
+                        )
+                        extra_conditions = [
+                            [51, change_puzzlehash, pmt_coin.amount - royalty_to_pay],
+                        ]
+                        for cond in extra_conditions:
+                            solution = wallet.add_condition_to_solution(cond, solution)
+                        coin_spend = CoinSpend(pmt_coin, puzzle, solution)
+                        spend_bundles.append(
+                            await sign_coin_spends(
+                                [coin_spend],
+                                wallet.secret_key_store.secret_key_for_public_key,
+                                wallet.wallet_state_manager.constants.AGG_SIG_ME_ADDITIONAL_DATA,
+                                wallet.wallet_state_manager.constants.MAX_BLOCK_COST_CLVM,
+                            )
+                        )
+                    elif wallet.type() == WalletType.CAT:
+                        # asset_id = wallet.get_asset_id()
+                        # change_puzzlehash = await wallet.get_new_inner_hash()
+                        # price = sum([pmt.amount for pmt in offer.requested_payments[asset_id]])
+                        # royalty_to_pay = uint16(price * royalty_pc / 10000)
+                        # pmt_coins = await wallet.select_coins(royalty_to_pay, exclude=[coin])
+                        raise ValueError("Fixing CAT offers not supported yet")
+                    
+            total_spend_bundle = SpendBundle.aggregate([*spend_bundles, offer.bundle])
 
-            # breakpoint()
+            breakpoint()
 
             # TODO: Add a signature of the trade prices list
-
+            
             pass
 
         new_spend_list: List[CoinSpend] = [cs for cs in offer.bundle.coin_spends if cs not in spends_to_fix]
