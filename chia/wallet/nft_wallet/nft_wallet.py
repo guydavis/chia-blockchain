@@ -1002,39 +1002,45 @@ class NFTWallet:
         spends_to_fix: List[CoinSpend] = []
         for spend in incomplete_spends:
             # TODO: identify this as an NFT1 with the proper graftroot solution
-            # nft_info = match_puzzle(spend.puzzle_reveal.to_program())
-            unft = UncurriedNFT.uncurry(spend.puzzle_reveal.to_program())
-            owner_info = match_puzzle(unft.inner_puzzle)
-            assert isinstance(owner_info, PuzzleInfo)
-            inner_puzzle = get_inner_puzzle(owner_info, unft.inner_puzzle)
-            assert isinstance(inner_puzzle, Program)
-            mod, args = inner_puzzle.uncurry()
-
-            if mod == NFT_GRAFTROOT_TRANSFER_MOD:
-                spends_to_fix.append(spend)
+            nft_info = match_puzzle(spend.puzzle_reveal.to_program())
+            if nft_info.also().also():
+                sol = spend.solution.to_program()
+                if sol.at("rrfffrf").uncurry()[0] == NFT_GRAFTROOT_TRANSFER_MOD:
+                    spends_to_fix.append(spend)
 
         replacement_spends: List[CoinSpend] = []
         for spend in spends_to_fix:
             # TODO: solve the graftroot inner puzzle w/ a pubkey etc.
             dr = await self.wallet_state_manager.get_unused_derivation_record(self.standard_wallet.id())
-            pk = bytes(dr.pubkey)
-            new_puzzle = self.standard_wallet.puzzle_for_pk(pk)
-            new_ph = new_puzzle.get_tree_hash()
+            new_pk = bytes(dr.pubkey)
+            new_ph = self.standard_wallet.puzzle_for_pk(new_pk).get_tree_hash()
             my_amount = spend.coin.amount
+            graftroot_inner_solution = Program.to([new_pk, new_ph, my_amount])
 
-            graftroot_inner_solution = Program.to([pk, new_ph, my_amount])  # noqa
             # TODO: reach into the appropriate wallets to add royalty payments to the offer spend bundle
-
             # (be sure to exclude coins from selection that are already in the offer)
-            # TODO: Add a signature of the trade prices list
             unft = UncurriedNFT.uncurry(spend.puzzle_reveal.to_program())
-            owner_info = match_puzzle(unft.inner_puzzle)
-            assert isinstance(owner_info, PuzzleInfo)
-            inner_puzzle = get_inner_puzzle(owner_info, unft.inner_puzzle)
-            assert isinstance(inner_puzzle, Program)
-            mod, args = inner_puzzle.uncurry()
-            conditions, trade_price_list = args
-            AugSchemeMPL.sign(dr.sk, trade_price_list)
+            royalty_pc = unft.trade_price_percentage
+            royalty_addr = unft.royalty_address
+
+            for coin in offer.get_primary_coins():
+                if coin.amount > 1:
+                    wallet = await self.wallet_state_manager.get_wallet_for_coin(coin.name())
+                    if wallet.type() == WalletType.STANDARD_WALLET:
+                        asset_id = None
+                        change_puzzlehash = await wallet.get_new_puzzlehash()
+                    else:
+                        asset_id = wallet.get_asset_id()
+                        change_puzzlehash = await wallet.get_new_inner_hash()
+                    price = sum([pmt.amount for pmt in offer.requested_payments[asset_id]])
+                    royalty_to_pay = uint16(price * royalty_pc / 10000)
+                    pmt_coins = await wallet.select_coins(royalty_to_pay, exclude=[coin])
+                    payments = [Payment(list(pmt_coins)[0].puzzle_hash, 0, [])]
+
+            # breakpoint()
+
+            # TODO: Add a signature of the trade prices list
+
             pass
 
         new_spend_list: List[CoinSpend] = [cs for cs in offer.bundle.coin_spends if cs not in spends_to_fix]

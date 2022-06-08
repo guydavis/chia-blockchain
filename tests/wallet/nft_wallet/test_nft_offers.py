@@ -920,6 +920,10 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
     await time_out_assert(15, wallet_maker.get_pending_change_balance, 0)
     hex_did_id = did_wallet_maker.get_my_DID()
     did_id = bytes32.fromhex(hex_did_id)
+    target_puzhash = ph_maker
+    royalty_puzhash = ph_maker
+    royalty_percentage = uint16(200)
+
     nft_wallet_maker = await NFTWallet.create_new_nft_wallet(
         wallet_node_maker.wallet_state_manager, wallet_maker, name="NFT WALLET DID 1", did_id=did_id
     )
@@ -931,7 +935,13 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
     )
     await time_out_assert(10, wallet_maker.get_unconfirmed_balance, 5999999999999)
     await time_out_assert(10, wallet_maker.get_confirmed_balance, 5999999999999)
-    sb = await nft_wallet_maker.generate_new_nft(metadata)
+    sb = await nft_wallet_maker.generate_new_nft(
+        metadata,
+        target_puzhash,
+        royalty_puzhash,
+        royalty_percentage,
+        did_id,
+    )
     assert sb
     # ensure hints are generated
     assert compute_memos(sb)
@@ -948,9 +958,16 @@ async def test_nft_offer_with_did_wallet(two_wallet_nodes: Any, trusted: Any) ->
             ("h", "0xD4584AD463139FA8C0D9F68F4B59F181"),
         ]
     )
+
     await time_out_assert(10, wallet_maker.get_unconfirmed_balance, 7999999999999 - 1)
     await time_out_assert(10, wallet_maker.get_confirmed_balance, 7999999999999 - 1)
-    sb = await nft_wallet_maker.generate_new_nft(metadata)
+    sb = await nft_wallet_maker.generate_new_nft(
+        metadata,
+        target_puzhash,
+        royalty_puzhash,
+        royalty_percentage,
+        did_id,
+    )
     assert sb
     # ensure hints are generated
     assert compute_memos(sb)
