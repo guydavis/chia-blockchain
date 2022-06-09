@@ -30,6 +30,7 @@ from chia.wallet.nft_wallet.nft_puzzles import (
     create_incomplete_graftroot_transfer_solution,
     create_ownership_layer_puzzle,
     create_ownership_layer_transfer_solution,
+    create_ownership_layer_transfer_solution_graftroot,
     get_metadata_and_phs,
 )
 from chia.wallet.nft_wallet.uncurry_nft import UncurriedNFT
@@ -42,6 +43,7 @@ from chia.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle import (
     calculate_synthetic_secret_key,
     puzzle_for_pk,
     solution_for_conditions,
+    solution_for_delegated_puzzle,
 )
 from chia.wallet.puzzles.puzzle_utils import make_create_coin_condition
 from chia.wallet.puzzles.singleton_top_layer_v1_1 import match_singleton_puzzle
@@ -57,6 +59,7 @@ from chia.wallet.wallet_info import WalletInfo
 
 STANDARD_PUZZLE_MOD = load_clvm("p2_delegated_puzzle_or_hidden_puzzle.clvm")
 NFT_GRAFTROOT_TRANSFER_MOD = load_clvm("nft_graftroot_transfer.clvm")
+
 
 _T_NFTWallet = TypeVar("_T_NFTWallet", bound="NFTWallet")
 
@@ -911,8 +914,10 @@ class NFTWallet:
         graftroot_sol = create_incomplete_graftroot_transfer_solution(
             graftroot_puz,
         )
+        inner_sol = Program.to([[graftroot_sol], 1])
         nft_driver = match_puzzle(coin_info.full_puzzle)
         assert nft_driver
+        unft = UncurriedNFT.uncurry(coin_info.full_puzzle)
         parent_coin_id = coin.parent_coin_info
 
         # get the parent spend from past txns
@@ -931,7 +936,7 @@ class NFTWallet:
 
         coin_bytes = b"".join([coin.parent_coin_info, coin.puzzle_hash, bytes(uint64(coin.amount))])
         solver = {"coin": coin_bytes, "parent_spend": bytes(parent_spend)}
-        singleton_solution = solve_puzzle(nft_driver, solver, graftroot_puz, graftroot_sol)  # type: ignore
+        singleton_solution = solve_puzzle(nft_driver, solver, unft.inner_puzzle, inner_sol)  # type: ignore
         return singleton_solution
 
     async def generate_did_nft_offer_spend_bundle(
@@ -1005,22 +1010,33 @@ class NFTWallet:
             # TODO: identify this as an NFT1 with the proper graftroot solution
             nft_info = match_puzzle(spend.puzzle_reveal.to_program())
             if nft_info.also().also():
-                sol = spend.solution.to_program()
-                if sol.at("rrfffrf").uncurry()[0] == NFT_GRAFTROOT_TRANSFER_MOD:
+                incomplete_solution = spend.solution.to_program()
+                if incomplete_solution.at("rrfffffrf").uncurry()[0] == NFT_GRAFTROOT_TRANSFER_MOD:
                     spends_to_fix.append(spend)
 
         replacement_spends: List[CoinSpend] = []
         for spend in spends_to_fix:
             # TODO: solve the graftroot inner puzzle w/ a pubkey etc.
+            unft = UncurriedNFT.uncurry(spend.puzzle_reveal.to_program())
             dr = await self.wallet_state_manager.get_unused_derivation_record(self.standard_wallet.id())
             new_pk = bytes(dr.pubkey)
             new_ph = self.standard_wallet.puzzle_for_pk(new_pk).get_tree_hash()
             my_amount = spend.coin.amount
-            graftroot_inner_solution = Program.to([new_pk, new_ph, my_amount])
 
+            inner_graftroot_sol = Program.to([new_pk, new_ph, my_amount])
+            graftroot_puz = NFT_GRAFTROOT_TRANSFER_MOD.curry([], [[1000]])
+            graftroot_sol = Program.to([[], graftroot_puz, inner_graftroot_sol])
+            new_inner_sol = Program.to([[graftroot_sol], 1])
+
+            lineage_proof = spend.solution.to_program().at("f")
+            new_full_sol = Program.to([lineage_proof, 1, new_inner_sol])
+            
+            new_spend = CoinSpend(spend.coin, spend.puzzle_reveal.to_program(), new_full_sol)
+            spend.puzzle_reveal.to_program().run(new_full_sol)
+            breakpoint()
             # TODO: reach into the appropriate wallets to add royalty payments to the offer spend bundle
             # (be sure to exclude coins from selection that are already in the offer)
-            unft = UncurriedNFT.uncurry(spend.puzzle_reveal.to_program())
+            
             royalty_pc = unft.trade_price_percentage
             royalty_addr = unft.royalty_address
             spend_bundles = []
@@ -1061,8 +1077,6 @@ class NFTWallet:
                         raise ValueError("Fixing CAT offers not supported yet")
                     
             total_spend_bundle = SpendBundle.aggregate([*spend_bundles, offer.bundle])
-
-            breakpoint()
 
             # TODO: Add a signature of the trade prices list
             

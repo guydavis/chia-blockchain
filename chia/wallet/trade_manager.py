@@ -377,9 +377,12 @@ class TradeManager:
                             trades = offer_dict[asset_id].info["trade_prices_list"]  # type: ignore
                             for trade in trades:
                                 requested_amount = uint64(trade[0])
-                                requested_asset = trade[1]
-                                if isinstance(requested_asset, int):
-                                    if requested_asset == 0:
+                                if len(trade) > 1:
+                                    requested_asset = trade[1]
+                                else:
+                                    requested_asset = None
+                                if isinstance(requested_asset, int) or requested_asset == None:
+                                    if requested_asset == None:
                                         p2_ph = await self.wallet_state_manager.main_wallet.get_new_puzzlehash()
                                         request_id = None
                                     else:
