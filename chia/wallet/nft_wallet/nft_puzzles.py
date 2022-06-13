@@ -211,14 +211,19 @@ def create_ownership_layer_puzzle(
     singleton_struct = Program.to((SINGLETON_MOD_HASH, (nft_id, LAUNCHER_PUZZLE_HASH)))
     if not royalty_puzzle_hash:
         royalty_puzzle_hash = p2_puzzle.get_tree_hash()
+    # transfer_program = NFT_TRANSFER_PROGRAM_DEFAULT.curry(
+    #     STANDARD_PUZZLE_MOD.get_tree_hash(),
+    #     singleton_struct,
+    #     royalty_puzzle_hash,
+    #     percentage,
+    #     OFFER_MOD.get_tree_hash(),
+    #     CAT_MOD.get_tree_hash(),
+    # )
+
     transfer_program = NFT_TRANSFER_PROGRAM_DEFAULT.curry(
-        STANDARD_PUZZLE_MOD.get_tree_hash(),
-        singleton_struct,
-        royalty_puzzle_hash,
-        percentage,
-        OFFER_MOD.get_tree_hash(),
-        CAT_MOD.get_tree_hash(),
+        singleton_struct, royalty_puzzle_hash, percentage, OFFER_MOD.get_tree_hash(), CAT_MOD.get_tree_hash()
     )
+
     nft_inner_puzzle = p2_puzzle
 
     nft_ownership_layer_puzzle = NFT_OWNERSHIP_LAYER.curry(

@@ -156,7 +156,7 @@ class UncurriedNFT:
                 _, p2_args = p2_puzzle.uncurry()
                 (pubkey_sexp,) = p2_args.as_iter()
                 transfer_program_mod, transfer_program_args = transfer_program.uncurry()
-                _, _, royalty_address_p, royalty_percentage, _, _ = transfer_program_args.as_iter()
+                _, royalty_address_p, royalty_percentage, _, _ = transfer_program_args.as_iter()
                 royalty_percentage = uint16(royalty_percentage.as_int())
                 royalty_address = royalty_address_p.atom
                 current_did = current_did.atom
