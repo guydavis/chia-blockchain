@@ -1251,7 +1251,7 @@ async def create_nft_sample(fake, royalty_did, royalty_basis_pts) -> List[Any]:
         1,  # series_total
         royalty_did,  # royalty_ph
         royalty_basis_pts,  # royalty_percentage
-        encode_puzzle_hash(bytes32(token_bytes(32)), "xch"),  # target address
+        encode_puzzle_hash(bytes32(token_bytes(32)), DID_HRP),  # target address
     ]
     return sample
 
@@ -1260,7 +1260,7 @@ async def create_nft_sample(fake, royalty_did, royalty_basis_pts) -> List[Any]:
 async def csv_file(tmpdir_factory):
     count = 10000
     fake = Faker()
-    royalty_did = encode_puzzle_hash(bytes32(token_bytes(32)), "xch")
+    royalty_did = encode_puzzle_hash(bytes32(token_bytes(32)), DID_HRP)
     royalty_basis_pts = 300
     coros = [create_nft_sample(fake, royalty_did, royalty_basis_pts) for _ in range(count)]
     data = await asyncio.gather(*coros)
