@@ -620,6 +620,26 @@ class WalletRpcClient(RpcClient):
         response = await self.fetch("nft_mint_nft", request)
         return response
 
+    async def bulk_mint_nft(
+        self,
+        wallet_id,
+        metadata,
+        target_addresses,
+        did_ids,
+        royalty_address,
+        royalty_percentage,
+    ):
+        request: Dict[str:Any] = {
+            "wallet_id": wallet_id,
+            "royalty_address": royalty_address,
+            "royalty_percentage": royalty_percentage,
+            "target_addresses": target_addresses,
+            "did_ids": did_ids,
+            "metadata": metadata,
+        }
+        response = await self.fetch("nft_bulk_mint_nft", request)
+        return response
+
     async def add_uri_to_nft(self, wallet_id, nft_coin_id, key, uri, fee):
         request: Dict[str, Any] = {
             "wallet_id": wallet_id,

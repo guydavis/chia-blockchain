@@ -9,6 +9,7 @@ from chia.types.blockchain_format.sized_bytes import bytes32
 
 fake = Faker()
 royalty_did = bytes32(token_bytes(32)).hex()
+royalty_basis_pts = 300
 
 
 async def create_nft_sample() -> List[Any]:
@@ -22,6 +23,7 @@ async def create_nft_sample() -> List[Any]:
         1,  # edition_number
         1,  # edition_count
         royalty_did,  # royalty_ph
+        royalty_basis_pts,  # royalty_percentage
         bytes32(token_bytes(32)).hex(),  # target ph
     ]
     return sample

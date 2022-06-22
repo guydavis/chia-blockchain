@@ -143,6 +143,7 @@ class WalletRpcApi:
             "/nft_get_info": self.nft_get_info,
             "/nft_transfer_nft": self.nft_transfer_nft,
             "/nft_add_uri": self.nft_add_uri,
+            "/nft_bulk_mint_nft": self.nft_bulk_mint_nft,
             # RL wallet
             "/rl_set_user_info": self.rl_set_user_info,
             "/send_clawback_transaction:": self.send_clawback_transaction,
@@ -1395,6 +1396,97 @@ class WalletRpcApi:
             fee,
         )
         return {"wallet_id": wallet_id, "success": True, "spend_bundle": spend_bundle}
+
+    async def nft_bulk_mint_nft(self, request) -> Dict:
+        # request: {data: [{}], target_addresses: [], wallet_id: id, royalty_address: ph, royalty_pc:}
+        log.debug("Got minting RPC request: %s", request)
+        if len(request.get("target_addresses")) != len(request.get("data")) != len(request.get("dids")):
+            return {"success": False, "error": "Length of data variables must all be equal"}
+        wallet_id = uint32(request["wallet_id"])
+        assert self.service.wallet_state_manager
+        nft_wallet: NFTWallet = self.service.wallet_state_manager.wallets[wallet_id]
+        if nft_wallet.type() != WalletType.NFT.value:
+            return {"success": False, "error": f"Wallet with id {wallet_id} is not an NFT one"}
+        royalty_address = request.get("royalty_address")
+        if isinstance(royalty_address, str):
+            royalty_puzhash = decode_puzzle_hash(royalty_address)
+        elif royalty_address is None:
+            royalty_puzhash = await nft_wallet.standard_wallet.get_new_puzzlehash()
+        else:
+            royalty_puzhash = royalty_address
+        royalty_percentage = uint16(request.get("royalty_percentage", 0))
+        target_addresses = request.get("target_addresses")
+        target_puzhashes = []
+        for target_address in target_addresses:
+            if isinstance(target_address, str):
+                target_puzhash = decode_puzzle_hash(target_address)
+            elif target_address is None:
+                target_puzhash = await nft_wallet.standard_wallet.get_new_puzzlehash()
+            else:
+                target_puzhash = target_address
+            target_puzhashes.append(target_puzhash)
+        if "uris" not in request:
+            return {"success": False, "error": "Data URIs is required"}
+        if not isinstance(request["uris"], list):
+            return {"success": False, "error": "Data URIs must be a list"}
+        if not isinstance(request.get("meta_uris", []), list):
+            return {"success": False, "error": "Metadata URIs must be a list"}
+        if not isinstance(request.get("license_uris", []), list):
+            return {"success": False, "error": "License URIs must be a list"}
+        metadata_list = []
+        for meta in request["data"]:
+            metadata = [
+                ("u", meta["uris"]),
+                ("h", hexstr_to_bytes(meta["hash"])),
+                ("mu", meta.get("meta_uris", [])),
+                ("lu", meta.get("license_uris", [])),
+                ("sn", uint64(meta.get("series_number", 1))),
+                ("st", uint64(meta.get("series_total", 1))),
+            ]
+            if "meta_hash" in meta and len(meta["meta_hash"]) > 0:
+                metadata.append(("mh", hexstr_to_bytes(meta["meta_hash"])))
+            if "license_hash" in meta and len(meta["license_hash"]) > 0:
+                metadata.append(("lh", hexstr_to_bytes(meta["license_hash"])))
+            metadata_list.append(Program.to(metadata))
+        did_ids = []
+        for did_id in request.get("did_ids", []):
+            if did_id is not None:
+                if did_id == "":
+                    did_id = bytes()
+                else:
+                    did_id = decode_puzzle_hash(did_id)
+            did_ids.append(did_id)
+
+        fee = uint64(request.get("fee", 0))
+        fee_to_pay = fee
+        first = True
+        spends = []
+        for i in range(len(metadata_list)):
+            if first:
+                spend_bundle = await nft_wallet.generate_new_nft(
+                    metadata_list[i],
+                    target_puzhashes[i],
+                    royalty_puzhash,
+                    royalty_percentage,
+                    did_ids[i],
+                    fee=fee_to_pay,
+                    push_tx=False,
+                )
+                fee_to_pay = uint64(0)
+                first = False
+            else:
+                spend_bundle = await nft_wallet.generate_new_nft(
+                    metadata_list[i],
+                    target_puzhashes[i],
+                    royalty_puzhash,
+                    royalty_percentage,
+                    did_ids[i],
+                    fee=fee_to_pay,
+                    push_tx=False,
+                )
+            spends.append(spend_bundle)
+        final_spend_bundle = SpendBundle.aggregate(spends)
+        return {"wallet_id": wallet_id, "success": True, "spend_bundle": final_spend_bundle}
 
     async def nft_get_nfts(self, request) -> Dict:
         wallet_id = uint32(request["wallet_id"])
