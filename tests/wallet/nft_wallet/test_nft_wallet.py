@@ -1,9 +1,12 @@
 import asyncio
+import csv
 import time
+from secrets import token_bytes
 from typing import Any, Awaitable, Callable, Dict, List
 
 import pytest
 from clvm_tools.binutils import disassemble
+from faker import Faker
 
 from chia.consensus.block_rewards import calculate_base_farmer_reward, calculate_pool_reward
 from chia.full_node.mempool_manager import MempoolManager
@@ -1234,3 +1237,143 @@ async def test_nft_set_did(two_wallet_nodes: Any, trusted: Any) -> None:
     coins = resp["nft_list"]
     assert len(coins) == 1
     assert coins[0].owner_did is None
+
+
+async def create_nft_sample(fake, royalty_did, royalty_basis_pts) -> List[Any]:
+    sample = [
+        bytes32(token_bytes(32)).hex(),  # data_hash
+        fake.image_url(),  # data_url
+        bytes32(token_bytes(32)).hex(),  # metadata_hash
+        fake.url(),  # metadata_url
+        bytes32(token_bytes(32)).hex(),  # license_hash
+        fake.url(),  # license_url
+        1,  # series_number
+        1,  # series_total
+        royalty_did,  # royalty_ph
+        royalty_basis_pts,  # royalty_percentage
+        encode_puzzle_hash(bytes32(token_bytes(32)), "xch"),  # target address
+    ]
+    return sample
+
+
+@pytest.fixture(scope="function")
+async def csv_file(tmpdir_factory):
+    count = 10000
+    fake = Faker()
+    royalty_did = encode_puzzle_hash(bytes32(token_bytes(32)), "xch")
+    royalty_basis_pts = 300
+    coros = [create_nft_sample(fake, royalty_did, royalty_basis_pts) for _ in range(count)]
+    data = await asyncio.gather(*coros)
+    filename = str(tmpdir_factory.mktemp("data").join("sample.csv"))
+    with open(filename, "w") as f:
+        writer = csv.writer(f)
+        writer.writerows(data)
+    return filename
+
+
+@pytest.mark.parametrize(
+    "trusted",
+    [True],
+)
+@pytest.mark.asyncio
+async def test_nft_wallet_rpc_bulk_mint(two_wallet_nodes: Any, trusted: Any, csv_file) -> None:
+    csv_filename = await csv_file
+    from chia.types.blockchain_format.sized_bytes import bytes32
+
+    # from chia.wallet.nft_wallet.nft_info import NFT_HRP
+
+    num_blocks = 3
+    full_nodes, wallets = two_wallet_nodes
+    full_node_api = full_nodes[0]
+    full_node_server = full_node_api.server
+    wallet_node_0, server_0 = wallets[0]
+    wallet_node_1, server_1 = wallets[1]
+    wallet_0 = wallet_node_0.wallet_state_manager.main_wallet
+    wallet_1 = wallet_node_1.wallet_state_manager.main_wallet
+
+    ph = await wallet_0.get_new_puzzlehash()
+    _ = await wallet_1.get_new_puzzlehash()
+
+    if trusted:
+        wallet_node_0.config["trusted_peers"] = {
+            full_node_api.full_node.server.node_id.hex(): full_node_api.full_node.server.node_id.hex()
+        }
+        wallet_node_1.config["trusted_peers"] = {
+            full_node_api.full_node.server.node_id.hex(): full_node_api.full_node.server.node_id.hex()
+        }
+    else:
+        wallet_node_0.config["trusted_peers"] = {}
+        wallet_node_1.config["trusted_peers"] = {}
+
+    for i in range(1, num_blocks):
+        await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(ph))
+
+    await server_0.start_client(PeerInfo("localhost", uint16(full_node_server._port)), None)
+    await server_1.start_client(PeerInfo("localhost", uint16(full_node_server._port)), None)
+
+    funds = sum(
+        [calculate_pool_reward(uint32(i)) + calculate_base_farmer_reward(uint32(i)) for i in range(1, num_blocks - 1)]
+    )
+
+    await time_out_assert(10, wallet_0.get_unconfirmed_balance, funds)
+    await time_out_assert(10, wallet_0.get_confirmed_balance, funds)
+
+    api_0 = WalletRpcApi(wallet_node_0)
+    await time_out_assert(10, wallet_node_0.wallet_state_manager.synced, True)
+    await time_out_assert(10, wallet_node_1.wallet_state_manager.synced, True)
+
+    did_wallet: DIDWallet = await DIDWallet.create_new_did_wallet(
+        wallet_node_0.wallet_state_manager, wallet_0, uint64(1)
+    )
+    spend_bundle_list = await wallet_node_0.wallet_state_manager.tx_store.get_unconfirmed_for_wallet(wallet_0.id())
+    spend_bundle = spend_bundle_list[0].spend_bundle
+    await time_out_assert_not_none(5, full_node_api.full_node.mempool_manager.get_spendbundle, spend_bundle.name())
+
+    for _ in range(1, num_blocks):
+        await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(ph))
+    await time_out_assert(15, wallet_0.get_pending_change_balance, 0)
+    hex_did_id = did_wallet.get_my_DID()
+    hmr_did_id = encode_puzzle_hash(bytes32.from_hexstr(hex_did_id), DID_HRP)
+
+    nft_wallet_0 = await api_0.create_new_wallet(dict(wallet_type="nft_wallet", name="NFT WALLET 1", did_id=hmr_did_id))
+    assert isinstance(nft_wallet_0, dict)
+    assert nft_wallet_0.get("success")
+    nft_wallet_0_id = nft_wallet_0["wallet_id"]
+
+    with open(csv_filename, "r") as f:
+        csv_reader = csv.reader(f)
+        bulk_data = list(csv_reader)
+
+    chunk = 10
+    metadata_list = []
+    royalty_dids = []
+    royalty_pcs = []
+    target_addresses = []
+    for row in bulk_data[:chunk]:
+        metadata = {
+            "hash": row[0],
+            "uris": [row[1]],
+            "meta_hash": row[2],
+            "meta_urls": [row[3]],
+            "license_hash": row[4],
+            "license_urls": [row[5]],
+            "series_number": row[6],
+            "series_total": row[7],
+        }
+        metadata_list.append(metadata)
+        royalty_dids.append(row[8])
+        royalty_pcs.append(row[9])
+        target_addresses.append(row[10])
+
+    resp = await api_0.nft_bulk_mint_nft(
+        {
+            "wallet_id": nft_wallet_0_id,
+            "metadata": metadata_list,
+            "royalty_addresses": royalty_dids,
+            "royalty_percentages": royalty_pcs,
+            "target_addresses": target_addresses,
+            "did_id": hmr_did_id,
+        }
+    )
+
+    assert resp.get("success")

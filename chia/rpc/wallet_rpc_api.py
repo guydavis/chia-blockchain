@@ -1398,23 +1398,32 @@ class WalletRpcApi:
         return {"wallet_id": wallet_id, "success": True, "spend_bundle": spend_bundle}
 
     async def nft_bulk_mint_nft(self, request) -> Dict:
-        # request: {data: [{}], target_addresses: [], wallet_id: id, royalty_address: ph, royalty_pc:}
         log.debug("Got minting RPC request: %s", request)
-        if len(request.get("target_addresses")) != len(request.get("data")) != len(request.get("dids")):
+        if (
+            len(request.get("target_addresses"))
+            != len(request.get("metadata"))
+            != len(request.get("did_ids"))
+            != len(request.get("royalty_addresses"))
+            != len(request.get("royalty_percentages"))
+        ):
             return {"success": False, "error": "Length of data variables must all be equal"}
         wallet_id = uint32(request["wallet_id"])
         assert self.service.wallet_state_manager
         nft_wallet: NFTWallet = self.service.wallet_state_manager.wallets[wallet_id]
         if nft_wallet.type() != WalletType.NFT.value:
             return {"success": False, "error": f"Wallet with id {wallet_id} is not an NFT one"}
-        royalty_address = request.get("royalty_address")
-        if isinstance(royalty_address, str):
-            royalty_puzhash = decode_puzzle_hash(royalty_address)
-        elif royalty_address is None:
-            royalty_puzhash = await nft_wallet.standard_wallet.get_new_puzzlehash()
-        else:
-            royalty_puzhash = royalty_address
-        royalty_percentage = uint16(request.get("royalty_percentage", 0))
+        royalty_addresses = []
+        for royalty_address in request.get("royalty_addresses"):
+            if isinstance(royalty_address, str):
+                royalty_puzhash = decode_puzzle_hash(royalty_address)
+            elif royalty_address is None:
+                royalty_puzhash = await nft_wallet.standard_wallet.get_new_puzzlehash()
+            else:
+                royalty_puzhash = royalty_address
+            royalty_addresses.append(royalty_puzhash)
+        royalty_percentages = []
+        for percentage in request.get("royalty_percentages"):
+            royalty_percentages.append(uint16(percentage))
         target_addresses = request.get("target_addresses")
         target_puzhashes = []
         for target_address in target_addresses:
@@ -1425,16 +1434,17 @@ class WalletRpcApi:
             else:
                 target_puzhash = target_address
             target_puzhashes.append(target_puzhash)
-        if "uris" not in request:
-            return {"success": False, "error": "Data URIs is required"}
-        if not isinstance(request["uris"], list):
-            return {"success": False, "error": "Data URIs must be a list"}
-        if not isinstance(request.get("meta_uris", []), list):
-            return {"success": False, "error": "Metadata URIs must be a list"}
-        if not isinstance(request.get("license_uris", []), list):
-            return {"success": False, "error": "License URIs must be a list"}
+
         metadata_list = []
-        for meta in request["data"]:
+        for meta in request["metadata"]:
+            if "uris" not in meta.keys():
+                return {"success": False, "error": "Data URIs is required"}
+            if not isinstance(meta["uris"], list):
+                return {"success": False, "error": "Data URIs must be a list"}
+            if not isinstance(meta.get("meta_uris", []), list):
+                return {"success": False, "error": "Metadata URIs must be a list"}
+            if not isinstance(meta.get("license_uris", []), list):
+                return {"success": False, "error": "License URIs must be a list"}
             metadata = [
                 ("u", meta["uris"]),
                 ("h", hexstr_to_bytes(meta["hash"])),
@@ -1448,14 +1458,12 @@ class WalletRpcApi:
             if "license_hash" in meta and len(meta["license_hash"]) > 0:
                 metadata.append(("lh", hexstr_to_bytes(meta["license_hash"])))
             metadata_list.append(Program.to(metadata))
-        did_ids = []
-        for did_id in request.get("did_ids", []):
-            if did_id is not None:
-                if did_id == "":
-                    did_id = bytes()
-                else:
-                    did_id = decode_puzzle_hash(did_id)
-            did_ids.append(did_id)
+        did_id = request.get("did_id", [])
+        if did_id is not None:
+            if did_id == "":
+                did_id = bytes()
+            else:
+                did_id = decode_puzzle_hash(did_id)
 
         fee = uint64(request.get("fee", 0))
         fee_to_pay = fee
@@ -1466,9 +1474,9 @@ class WalletRpcApi:
                 spend_bundle = await nft_wallet.generate_new_nft(
                     metadata_list[i],
                     target_puzhashes[i],
-                    royalty_puzhash,
-                    royalty_percentage,
-                    did_ids[i],
+                    royalty_addresses[i],
+                    royalty_percentages[i],
+                    did_id,
                     fee=fee_to_pay,
                     push_tx=False,
                 )
@@ -1478,9 +1486,9 @@ class WalletRpcApi:
                 spend_bundle = await nft_wallet.generate_new_nft(
                     metadata_list[i],
                     target_puzhashes[i],
-                    royalty_puzhash,
-                    royalty_percentage,
-                    did_ids[i],
+                    royalty_addresses[i],
+                    royalty_percentages[i],
+                    did_id,
                     fee=fee_to_pay,
                     push_tx=False,
                 )
