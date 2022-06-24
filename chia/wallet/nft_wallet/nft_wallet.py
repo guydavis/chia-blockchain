@@ -1181,4 +1181,6 @@ class NFTWallet:
             memos=list(compute_memos(launch_sb).items()),
         )
 
+        await self.wallet_state_manager.add_pending_transaction(launch_tx)
+
         return launch_tx
