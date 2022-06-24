@@ -15,6 +15,7 @@ from chia.types.blockchain_format.program import Program
 from chia.types.blockchain_format.sized_bytes import bytes32
 from chia.types.coin_spend import CoinSpend
 from chia.types.spend_bundle import SpendBundle
+from chia.util.bech32m import decode_puzzle_hash
 from chia.util.condition_tools import conditions_dict_for_solution, pkm_pairs_for_conditions_dict
 from chia.util.ints import uint8, uint16, uint32, uint64, uint128
 from chia.wallet.derivation_record import DerivationRecord
@@ -1046,3 +1047,138 @@ class NFTWallet:
             return spend_bundle
         else:
             raise ValueError("Couldn't set DID on given NFT")
+
+    async def bulk_generate_nfts(
+        self,
+        metadata_list: List[Program],
+        did_id: bytes32,
+        royalty_did_id: str = None,
+        royalty_percent: Optional[uint16] = None,
+        fee: uint64 = uint64(0),
+    ) -> Optional[TransactionRecord]:
+        self.log.debug("Generating bulk NFTs")
+        if self.did_id is not None and did_id is None:
+            # For a DID enabled NFT wallet it cannot mint NFT0. Mint NFT1 instead.
+            did_id = self.did_id
+        amount = uint64(1)
+        main_wallet_id = self.standard_wallet.wallet_id
+        spendable_coins = list(await self.wallet_state_manager.get_spendable_coins_for_wallet(main_wallet_id))
+        if len(spendable_coins) < len(metadata_list):
+            raise ValueError("Not enough coins to generate a bulk mint spend bundle")
+        first = True
+        fee_to_pay = fee
+        launch_txs = []
+        for i, metadata in enumerate(metadata_list):
+            origin = spendable_coins[i]
+            genesis_launcher_puz = nft_puzzles.LAUNCHER_PUZZLE
+            launcher_coin = Coin(origin.name(), genesis_launcher_puz.get_tree_hash(), uint64(amount))
+            p2_inner_puzzle = await self.standard_wallet.get_new_puzzle()
+            target_puzzle_hash = p2_inner_puzzle.get_tree_hash()
+            self.log.debug("Attempt to generate a new NFT to %s", target_puzzle_hash.hex())
+            if did_id is not None:
+                self.log.debug("Creating provenant NFT")
+                # eve coin DID can be set to whatever so we keep it empty
+                # WARNING: wallets should always ignore DID value for eve coins as they can be set
+                #          to any DID without approval
+                assert isinstance(royalty_did_id, str)
+                royalty_puzzle_hash = decode_puzzle_hash(royalty_did_id)
+                assert isinstance(royalty_percent, uint16)
+                inner_puzzle = create_ownership_layer_puzzle(
+                    launcher_coin.name(), b"", p2_inner_puzzle, royalty_percent, royalty_puzzle_hash=royalty_puzzle_hash
+                )
+                self.log.debug("Got back ownership inner puzzle: %s", disassemble(inner_puzzle))
+            else:
+                self.log.debug("Creating standard NFT")
+                inner_puzzle = p2_inner_puzzle
+            # singleton eve puzzle
+            eve_fullpuz = nft_puzzles.create_full_puzzle(
+                launcher_coin.name(), metadata, NFT_METADATA_UPDATER.get_tree_hash(), inner_puzzle
+            )
+            # launcher announcement
+            announcement_set: Set[Announcement] = set()
+            announcement_message = Program.to([eve_fullpuz.get_tree_hash(), amount, []]).get_tree_hash()
+            announcement_set.add(Announcement(launcher_coin.name(), announcement_message))
+            if first:
+                tx_record: Optional[TransactionRecord] = await self.standard_wallet.generate_signed_transaction(
+                    uint64(amount),
+                    genesis_launcher_puz.get_tree_hash(),
+                    fee_to_pay,
+                    origin.name(),
+                    set([origin.coin]),
+                    None,
+                    False,
+                    announcement_set,
+                )
+                fee_to_pay = uint64(0)
+                first = False
+            else:
+                tx_record = await self.standard_wallet.generate_signed_transaction(
+                    uint64(amount),
+                    genesis_launcher_puz.get_tree_hash(),
+                    fee_to_pay,
+                    origin.name(),
+                    set([origin.coin]),
+                    None,
+                    False,
+                    announcement_set,
+                )
+
+            genesis_launcher_solution = Program.to([eve_fullpuz.get_tree_hash(), amount, []])
+
+            # launcher spend to generate the singleton
+            launcher_cs = CoinSpend(launcher_coin, genesis_launcher_puz, genesis_launcher_solution)
+            launcher_sb = SpendBundle([launcher_cs], AugSchemeMPL.aggregate([]))
+
+            eve_coin = Coin(launcher_coin.name(), eve_fullpuz.get_tree_hash(), uint64(amount))
+            if tx_record is None or tx_record.spend_bundle is None:
+                self.log.error("Couldn't produce a launcher spend")
+                return None
+
+            bundles_to_agg = [tx_record.spend_bundle, launcher_sb]
+            did_inner_hash = b""
+            if did_id is not None:
+                if did_id != b"":
+                    did_inner_hash, did_bundle = await self.get_did_approval_info(launcher_coin.name())
+                    bundles_to_agg.append(did_bundle)
+            nft_coin = NFTCoinInfo(
+                nft_id=launcher_coin.name(),
+                coin=eve_coin,
+                lineage_proof=LineageProof(parent_name=launcher_coin.parent_coin_info, amount=launcher_coin.amount),
+                full_puzzle=eve_fullpuz,
+                mint_height=uint32(0),
+            )
+
+            txs = await self.generate_signed_transaction(
+                [eve_coin.amount],
+                [target_puzzle_hash],
+                nft_coin=nft_coin,
+                fee=fee,
+                new_owner=did_id,
+                new_did_inner_hash=did_inner_hash,
+                additional_bundles=bundles_to_agg,
+                memos=[[target_puzzle_hash]],
+            )
+            launch_txs.extend(txs)
+
+        # aggregate txs into a single tx
+        launch_sb = SpendBundle.aggregate([x.spend_bundle for x in launch_txs if x.spend_bundle is not None])
+        launch_tx = TransactionRecord(
+            confirmed_at_height=uint32(0),
+            created_at_time=uint64(int(time.time())),
+            to_puzzle_hash=genesis_launcher_puz.get_tree_hash(),
+            amount=uint64(len(metadata_list)),
+            fee_amount=uint64(fee),
+            confirmed=False,
+            sent=uint32(0),
+            spend_bundle=launch_sb,
+            additions=launch_sb.additions(),
+            removals=launch_sb.removals(),
+            wallet_id=main_wallet_id,
+            sent_to=[],
+            trade_id=None,
+            type=uint32(TransactionType.OUTGOING_TX.value),
+            name=launch_sb.name(),
+            memos=list(compute_memos(launch_sb).items()),
+        )
+
+        return launch_tx
